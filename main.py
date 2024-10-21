@@ -1,122 +1,155 @@
 import streamlit as st
-from dataclasses import dataclass
-from typing import List
-import datetime
+import openai
+import time
+from datetime import datetime
+from typing import List, Dict
 from openai import OpenAI
 
 
 
-@dataclass
-class Message:
-    """Class for storing chat messages."""
-    content: str
-    role: str
-    timestamp: datetime.datetime
 
 
-class ChatMemory:
-    """Class for managing chat history and context."""
-
-    def __init__(self, max_context_length: int = 1000):
-        self.messages: List[Message] = []
-        self.max_context_length = max_context_length
-
-    def add_message(self, content: str, role: str):
-        """Add a new message to the chat history."""
-        message = Message(
-            content=content,
-            role=role,
-            timestamp=datetime.datetime.now()
-        )
-        self.messages.append(message)
-
-    def get_context(self) -> str:
-        """Get formatted context string from chat history."""
-        context = ""
-        for msg in self.messages[-5:]:  # Get last 5 messages for context
-            context += f"{msg.role}: {msg.content}\n"
-        return context.strip()
-
-    def clear(self):
-        """Clear chat history."""
-        self.messages = []
+class ChatMessage:
+    def __init__(self, role: str, content: str, timestamp: datetime = None):
+        self.role = role
+        self.content = content
+        self.timestamp = timestamp or datetime.now()
 
 
-class Chatbot:
-    """Main chatbot class handling model interactions."""
+def get_llm_response(messages: List[Dict[str, str]]) -> str:
+    """Get response from OpenAI with error handling and retries"""
 
-    def __init__(self):
-        self.client = OpenAI(base_url = "https://integrate.api.nvidia.com/v1",
-                             api_key = "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"
-                             )
-        self.memory = ChatMemory()
+    client = OpenAI(
+        base_url="https://integrate.api.nvidia.com/v1",
+        api_key="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"
+    )
 
-    def generate_response(self, user_input: str) -> str:
-        """Generate response using the model."""
-        # Get context from previous messages
-        context = self.memory.get_context()
-
-        # Combine context and new input
-        prompt = f"{context}\nUser: {user_input}\nAssistant:"
-
-        # Tokenize and generate response
-        completion = self.client.chat.completions.create(
-            model="nvidia/llama-3.1-nemotron-70b-instruct",
-            messages=[{"role": "user", "content": f"""{prompt}"""}],
-            temperature=0.5,
-            top_p=1,
-            max_tokens=2048,
-            stream=False
-        )
-
-        # Decode response
-        response = completion.choices[0].message.content
-
-        # Add to memory
-        self.memory.add_message(user_input, "User")
-        self.memory.add_message(response, "Assistant")
-
-        return response
+    completion = client.chat.completions.create(
+        model="nvidia/llama-3.1-nemotron-70b-instruct",
+        messages=[{"role": "user",
+                   "content": f"""{messages}"""}],
+        temperature=0.5,
+        top_p=1,
+        max_tokens=2048,
+        stream=False
+    )
+    return completion.choices[0].message.content
 
 
 def initialize_session_state():
-    """Initialize session state variables."""
-    if 'chatbot' not in st.session_state:
-        st.session_state.chatbot = Chatbot()
-    if 'messages' not in st.session_state:
-        st.session_state.messages = []
+    """Initialize session state variables"""
+    if "user_sessions" not in st.session_state:
+        st.session_state.user_sessions = {}
+    if "current_user" not in st.session_state:
+        st.session_state.current_user = None
 
 
-def main():
-    st.title("Contextual Chatbot")
 
-    # Initialize session state
-    initialize_session_state()
 
-    # Chat interface
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
+st.set_page_config(
+    page_title="Multi-User Chatbot",
+    page_icon="💬",
+    layout="wide"
+)
 
-    # Chat input
-    if prompt := st.chat_input("What's on your mind?"):
-        # Add user message to chat
-        with st.chat_message("user"):
-            st.markdown(prompt)
-        st.session_state.messages.append({"role": "user", "content": prompt})
+# Initialize session state
+initialize_session_state()
 
-        # Generate and display assistant response
-        with st.chat_message("assistant"):
-            response = st.session_state.chatbot.generate_response(prompt)
-            st.markdown(response)
-        st.session_state.messages.append({"role": "assistant", "content": response})
+st.title("💬 Multi-User Chatbot")
 
-    # Sidebar controls
-    with st.sidebar:
-        st.title("Settings")
-        if st.button("Clear Chat History"):
-            st.session_state.messages = []
-            st.session_state.chatbot.memory.clear()
+# Sidebar for user management
+with st.sidebar:
+    st.header("User Management")
+    username = st.text_input("Enter username")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Login"):
+            if username:
+                st.session_state.current_user = username
+                if username not in st.session_state.user_sessions:
+                    st.session_state.user_sessions[username] = []
+                st.success(f"Logged in as {username}")
+            else:
+                st.error("Please enter a username")
+
+    with col2:
+        if st.button("Logout"):
+            st.session_state.current_user = None
+            st.success("Logged out successfully")
             st.rerun()
 
-main()
+# Main chat interface
+if st.session_state.current_user:
+    st.write(f"Logged in as: {st.session_state.current_user}")
+
+    # Chat messages container with custom styling
+    chat_container = st.container()
+    with chat_container:
+        for message in st.session_state.user_sessions[st.session_state.current_user]:
+            with st.chat_message(message.role):
+                st.write(message.content)
+                st.caption(f"Sent at: {message.timestamp.strftime('%Y-%m-%d %H:%M:%S')}")
+
+    # Chat input
+    if prompt := st.chat_input("Type your message here..."):
+        try:
+            # Add user message
+            user_message = ChatMessage("user", prompt)
+            st.session_state.user_sessions[st.session_state.current_user].append(user_message)
+
+            # Display user message
+            with st.chat_message("user"):
+                st.write(prompt)
+
+            # Get and display assistant response
+            with st.chat_message("assistant"):
+                message_placeholder = st.empty()
+
+                # Prepare conversation history
+                formatted_messages = [
+                    {"role": msg.role, "content": msg.content}
+                    for msg in st.session_state.user_sessions[st.session_state.current_user]
+                ]
+
+                try:
+                    response = get_llm_response(formatted_messages)
+
+                    # Simulate typing effect
+                    full_response = ""
+                    for chunk in response.split():
+                        full_response += chunk + " "
+                        time.sleep(0.05)
+                        message_placeholder.write(full_response + "▌")
+                    message_placeholder.write(response)
+
+                    # Add assistant response to history
+                    assistant_message = ChatMessage("assistant", response)
+                    st.session_state.user_sessions[st.session_state.current_user].append(assistant_message)
+
+                except Exception as e:
+                    st.error("Failed to get response. Please try again.")
+
+        except Exception as e:
+            st.error(f"An error occurred: {str(e)}")
+
+    # Session management in sidebar
+    with st.sidebar:
+        st.header("Session Management")
+
+        # Clear chat history
+        if st.button("Clear Chat History"):
+            st.session_state.user_sessions[st.session_state.current_user] = []
+            st.success("Chat history cleared!")
+            st.rerun()
+
+        # Display session info
+        st.header("Session Info")
+        messages = st.session_state.user_sessions[st.session_state.current_user]
+        st.write(f"Total messages: {len(messages)}")
+        if messages:
+            st.write(f"Session started: {messages[0].timestamp.strftime('%Y-%m-%d %H:%M:%S')}")
+            st.write(f"Last message: {messages[-1].timestamp.strftime('%Y-%m-%d %H:%M:%S')}")
+
+else:
+    st.info("Please login using the sidebar to start chatting.")
